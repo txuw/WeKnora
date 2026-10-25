@@ -3,6 +3,8 @@ name: Personal ACR release
 on:
   push:
     branches: [self, dev]
+  pull_request:
+    branches: [self, dev]
   workflow_dispatch:
 
 permissions:
@@ -45,6 +47,7 @@ jobs:
         run: python3 -m py_compile scripts/personal-release/update_gitops.py
 
   images:
+    if: github.event_name != 'pull_request' && (github.ref_name == 'dev' || github.ref_name == 'self')
     runs-on: ubuntu-latest
     timeout-minutes: 90
     strategy:
@@ -93,7 +96,7 @@ jobs:
 
   publish-config:
     needs: [verify, images]
-    if: github.ref_name == 'dev' || github.ref_name == 'self'
+    if: github.event_name != 'pull_request' && (github.ref_name == 'dev' || github.ref_name == 'self')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -126,10 +129,12 @@ jobs:
         if: steps.source.outputs.current == 'true'
         env:
           TARGET_ENVIRONMENT: ${{ github.ref_name }}
+          ACR_USERNAME: ${{ secrets.ACR_USERNAME }}
+          ACR_PASSWORD: ${{ secrets.ACR_PASSWORD }}
         run: |
           python3 -m pip install --quiet PyYAML
           python3 source/scripts/personal-release/update_gitops.py \
-            --root deployment --environment "$TARGET_ENVIRONMENT" --sha "$GITHUB_SHA"
+            --root deployment --environment "$TARGET_ENVIRONMENT" --sha "$GITHUB_SHA" --resolve-digests
           cd deployment
           git config user.name "WeKnora Release Bot"
           git config user.email "weknora-release@users.noreply.github.com"

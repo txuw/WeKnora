@@ -3,6 +3,7 @@ name: Personal ACR release
 on:
   push:
     branches: [self, dev]
+    paths-ignore: ['.github/workflows/personal-infra.yml']
   pull_request:
     branches: [self, dev]
   workflow_dispatch:

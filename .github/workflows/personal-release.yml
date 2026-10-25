@@ -1,0 +1,143 @@
+name: Personal ACR release
+
+on:
+  push:
+    branches: [self, dev]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Serialize both environments, including their build and GitOps promotion.
+concurrency:
+  group: weknora-personal-release
+  cancel-in-progress: false
+
+env:
+  ACR_DOMAIN: registry.cn-hangzhou.aliyuncs.com
+  ACR_NAMESPACE: txuw
+  DEPLOY_REPO: txuw/k3s-apps-config
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26'
+          cache: true
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Verify migrations and application wiring
+        run: go test ./internal/database ./internal/container
+      - name: Verify frontend
+        working-directory: frontend
+        run: |
+          npm ci --no-audit --no-fund
+          npm test
+          npm run type-check
+      - name: Check publishing script
+        run: python3 -m py_compile scripts/personal-release/update_gitops.py
+
+  images:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - component: app
+            file: docker/Dockerfile.app
+            context: .
+          - component: ui
+            file: frontend/Dockerfile
+            context: frontend
+          - component: docreader
+            file: docker/Dockerfile.docreader
+            context: .
+    steps:
+      - uses: actions/checkout@v6
+      - name: Free runner disk for parser dependencies
+        run: |
+          sudo rm -rf /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          docker image prune -af
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
+        with:
+          registry: ${{ env.ACR_DOMAIN }}
+          username: ${{ secrets.ACR_USERNAME }}
+          password: ${{ secrets.ACR_PASSWORD }}
+      - uses: docker/build-push-action@v7
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.file }}
+          platforms: linux/amd64
+          push: true
+          tags: ${{ env.ACR_DOMAIN }}/${{ env.ACR_NAMESPACE }}/weknora-${{ matrix.component }}:${{ github.sha }}
+          build-args: |
+            VITE_FRONTEND_COMMIT=${{ github.sha }}
+            COMMIT_ID_ARG=${{ github.sha }}
+            VERSION_ARG=personal-${{ github.sha }}
+            GOPROXY_ARG=https://proxy.golang.org,direct
+            GOSUMDB_ARG=sum.golang.org
+          cache-from: type=gha,scope=personal-${{ matrix.component }}
+          cache-to: type=gha,mode=max,scope=personal-${{ matrix.component }}
+
+  publish-config:
+    needs: [verify, images]
+    if: github.ref_name == 'dev' || github.ref_name == 'self'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          path: source
+          fetch-depth: 1
+      - name: Determine whether this source revision is still current
+        id: source
+        working-directory: source
+        env:
+          SOURCE_BRANCH: ${{ github.ref_name }}
+        run: |
+          head_sha=$(git ls-remote origin "refs/heads/$SOURCE_BRANCH" | cut -f1)
+          if [ "$head_sha" = "$GITHUB_SHA" ]; then
+            echo "current=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "current=false" >> "$GITHUB_OUTPUT"
+            echo "A newer source revision exists; skipping this promotion." >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - uses: actions/checkout@v6
+        if: steps.source.outputs.current == 'true'
+        with:
+          repository: ${{ env.DEPLOY_REPO }}
+          ref: main
+          token: ${{ secrets.GIT_PAT }}
+          path: deployment
+          fetch-depth: 1
+      - name: Update the three-image release as one GitOps commit
+        if: steps.source.outputs.current == 'true'
+        env:
+          TARGET_ENVIRONMENT: ${{ github.ref_name }}
+        run: |
+          python3 -m pip install --quiet PyYAML
+          python3 source/scripts/personal-release/update_gitops.py \
+            --root deployment --environment "$TARGET_ENVIRONMENT" --sha "$GITHUB_SHA"
+          cd deployment
+          git config user.name "WeKnora Release Bot"
+          git config user.email "weknora-release@users.noreply.github.com"
+          git add "apps/weknora/environments/$TARGET_ENVIRONMENT/values.yaml"
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "Deploy WeKnora $TARGET_ENVIRONMENT at $GITHUB_SHA"
+          for attempt in 1 2 3 4 5; do
+            if git push origin HEAD:main; then
+              echo "Promoted $TARGET_ENVIRONMENT to $GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            git pull --rebase origin main
+          done
+          exit 1

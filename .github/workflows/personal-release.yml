@@ -78,6 +78,9 @@ jobs:
           file: ${{ matrix.file }}
           platforms: linux/amd64
           push: true
+          # This ACR endpoint does not accept BuildKit OCI attestation manifests.
+          provenance: false
+          sbom: false
           tags: ${{ env.ACR_DOMAIN }}/${{ env.ACR_NAMESPACE }}/weknora-${{ matrix.component }}:${{ github.sha }}
           build-args: |
             VITE_FRONTEND_COMMIT=${{ github.sha }}

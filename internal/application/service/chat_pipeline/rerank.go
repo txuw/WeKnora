@@ -3,6 +3,7 @@ package chatpipeline
 import (
 	"context"
 	"fmt"
+	"os"
 
 	"github.com/Tencent/WeKnora/internal/reranking"
 	"github.com/Tencent/WeKnora/internal/tracing/langfuse"
@@ -69,6 +70,9 @@ func (p *PluginRerank) OnEvent(ctx context.Context,
 		pipelineWarn(ctx, "Rerank", "skip", map[string]interface{}{
 			"reason": "empty_model_id",
 		})
+		if os.Getenv("WEKNORA_RERANK_REQUIRED") == "true" {
+			return ErrRerank.WithError(fmt.Errorf("required rerank model is not configured"))
+		}
 		return next()
 	}
 
@@ -83,6 +87,9 @@ func (p *PluginRerank) OnEvent(ctx context.Context,
 			"model_id": chatManage.RerankModelID,
 			"error":    err.Error(),
 		})
+		if os.Getenv("WEKNORA_RERANK_REQUIRED") == "true" {
+			return ErrRerank.WithError(fmt.Errorf("required rerank model is unavailable: %w", err))
+		}
 		return next()
 	}
 
@@ -135,6 +142,9 @@ func (p *PluginRerank) OnEvent(ctx context.Context,
 			"candidate_count": diag.CandidateCount,
 			"error":           diag.Error,
 		}, nil, nil)
+		if os.Getenv("WEKNORA_RERANK_REQUIRED") == "true" {
+			return ErrRerank.WithError(fmt.Errorf("required reranking failed: %s", diag.Error))
+		}
 		return next()
 	}
 

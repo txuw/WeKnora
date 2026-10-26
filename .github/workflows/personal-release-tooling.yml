@@ -1,0 +1,23 @@
+name: Personal release tooling
+
+on:
+  push:
+    branches: [dev, self]
+    paths: ['.github/workflows/personal-release.yml', '.github/workflows/personal-release-tooling.yml', 'scripts/personal-release/**']
+  pull_request:
+    branches: [dev, self]
+    paths: ['.github/workflows/personal-release.yml', '.github/workflows/personal-release-tooling.yml', 'scripts/personal-release/**']
+
+permissions:
+  contents: read
+
+jobs:
+  promotion-safety:
+    name: GitOps promotion safety
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - run: |
+          python3 -m pip install --quiet PyYAML
+          python3 -m unittest discover -s scripts/personal-release -v
+          python3 -m py_compile scripts/personal-release/update_gitops.py scripts/personal-release/promote_gitops.py

@@ -3,7 +3,7 @@ name: Personal ACR release
 on:
   push:
     branches: [self, dev]
-    paths-ignore: ['.github/workflows/personal-infra.yml']
+    paths-ignore: ['.github/workflows/personal-infra.yml', '.github/workflows/personal-release.yml', '.github/workflows/personal-release-tooling.yml', 'scripts/personal-release/**']
   pull_request:
     branches: [self, dev]
   workflow_dispatch:
@@ -20,6 +20,7 @@ env:
   ACR_DOMAIN: registry.cn-hangzhou.aliyuncs.com
   ACR_NAMESPACE: txuw
   DEPLOY_REPO: txuw/k3s-apps-config
+  GITOPS_BASE_BRANCH: weknora-release
 
 jobs:
   verify:
@@ -45,7 +46,9 @@ jobs:
           npm test
           npm run type-check
       - name: Check publishing script
-        run: python3 -m py_compile scripts/personal-release/update_gitops.py
+        run: |
+          python3 -m py_compile scripts/personal-release/update_gitops.py scripts/personal-release/promote_gitops.py
+          python3 -m unittest discover -s scripts/personal-release -v
 
   images:
     if: github.event_name != 'pull_request' && (github.ref_name == 'dev' || github.ref_name == 'self')
@@ -99,7 +102,7 @@ jobs:
     needs: [verify, images]
     if: github.event_name != 'pull_request' && (github.ref_name == 'dev' || github.ref_name == 'self')
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v6
         with:
@@ -122,31 +125,22 @@ jobs:
         if: steps.source.outputs.current == 'true'
         with:
           repository: ${{ env.DEPLOY_REPO }}
-          ref: main
+          ref: ${{ env.GITOPS_BASE_BRANCH }}
           token: ${{ secrets.GIT_PAT }}
           path: deployment
           fetch-depth: 1
-      - name: Update the three-image release as one GitOps commit
+      - name: Submit and merge a validated three-image GitOps PR
         if: steps.source.outputs.current == 'true'
         env:
           TARGET_ENVIRONMENT: ${{ github.ref_name }}
           ACR_USERNAME: ${{ secrets.ACR_USERNAME }}
           ACR_PASSWORD: ${{ secrets.ACR_PASSWORD }}
+          GH_TOKEN: ${{ secrets.GIT_PAT }}
         run: |
           python3 -m pip install --quiet PyYAML
           python3 source/scripts/personal-release/update_gitops.py \
             --root deployment --environment "$TARGET_ENVIRONMENT" --sha "$GITHUB_SHA" --resolve-digests
-          cd deployment
-          git config user.name "WeKnora Release Bot"
-          git config user.email "weknora-release@users.noreply.github.com"
-          git add "apps/weknora/environments/$TARGET_ENVIRONMENT/values.yaml"
-          if git diff --cached --quiet; then exit 0; fi
-          git commit -m "Deploy WeKnora $TARGET_ENVIRONMENT at $GITHUB_SHA"
-          for attempt in 1 2 3 4 5; do
-            if git push origin HEAD:main; then
-              echo "Promoted $TARGET_ENVIRONMENT to $GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"
-              exit 0
-            fi
-            git pull --rebase origin main
-          done
-          exit 1
+          python3 source/scripts/personal-release/promote_gitops.py \
+            --root deployment --environment "$TARGET_ENVIRONMENT" --sha "$GITHUB_SHA" \
+            --deployment-repo "$DEPLOY_REPO" --source-repo "$GITHUB_REPOSITORY" \
+            --base-branch "$GITOPS_BASE_BRANCH"

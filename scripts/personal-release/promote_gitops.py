@@ -82,8 +82,8 @@ def wait_and_merge(api, repository, number, source_repository, environment, sour
             elif pr.get('mergeable_state') in ['dirty', 'blocked', 'draft']:
                 raise RuntimeError('GitHub branch protection or a conflict blocks this GitOps PR')
             elif pr.get('mergeable') is not None:
-                # GitHub enforces the protected release branch as well. The SHA
-                # lease rejects a candidate that changed after validation.
+                # The cluster independently waits for successful push CI before
+                # advancing Argo. This lease rejects a changed PR candidate.
                 try:
                     merged = api.request('PUT', prefix + f'/pulls/{number}/merge', {'sha': head, 'merge_method': 'squash'})
                 except GitHubError as error:
